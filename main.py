@@ -7,6 +7,8 @@ from datetime import datetime
 import socket
 import json
 import threading
+import urllib.parse
+import logging
 
 class MyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -52,68 +54,44 @@ class MyHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(content)
-            
+
+
     def do_POST(self):
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length).decode('utf-8')
-            form_data = parse_qs(post_data)
+        size = self.headers.get("Content-Length")
+        data = self.rfile.read(int(size))
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.sendto(data, ('127.0.0.1', 5000))
+        client_socket.close()
+        self.send_response(302)
+        self.send_header('Location', '/')
+        self.end_headers()
 
-            print("Received form data:",datetime.now(), form_data)
-
-            response_text = "Form data received successfully!"
-            #Temporary
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            client_socket.sendto(post_data, ('127.0.0.1', 5000))
-            client_socket.close()
-            
-            self.send_response(302)
-            self.send_header('Location', '/')
-            self.end_headers()
-            self.wfile.write(response_text.encode('utf-8'))
-
-        except Exception as e:
-            print("Error handling POST request:", e)
-            self.send_response(500)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write("Internal Server Error".encode('utf-8'))
-            
-    def do_POST_udp(self):
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length).decode('utf-8')
-        form_data = parse_qs(post_data)
-        username = form_data.get('username', [''])[0]
-        message = form_data.get('message', [''])[0]
-
-        udp_server_address = ('', 5000)
-        udp_client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        data = {"username": username, "message": message}
-        data_string = json.dumps(data)
-        udp_client.sendto(data_string.encode('utf-8'), udp_server_address)
-        
-    def log_message(self, format: str, *args: Any) -> None:
-        pass
-    
-def handle_udp_data(data):
+def save_data(data):
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-        data_dict = {timestamp: {"timestamp": timestamp}}
-        
-        received_data = json.loads(data.decode('utf-8'))
-        for key, value in received_data.items():
-            data_dict[timestamp][key] = value
-            
-        with open('storage/data.json', 'a') as file:
-            json.dump(data_dict, file, indent=2)
-            file.write('\n')
+        data_parse = urllib.parse.unquote_plus(data.decode())
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        new_data = {current_time: {key: value for key, value in [el.split('=') for el in data_parse.split('&')]}}
 
-        print(f"Data received and saved: {data_dict}")
+        directory_path = os.path.join(os.path.dirname(__file__), 'storage')
+        file_path = os.path.join(directory_path, 'data.json')
 
-    except json.JSONDecodeError:
-        print("Error decoding JSON data")
-                    
+        if not os.path.exists(directory_path):
+            os.makedirs(directory_path)
 
+        try:
+            with open(file_path, "r", encoding="utf-8") as file:
+                existing_data = json.load(file)
+        except FileNotFoundError:
+            existing_data = {}
+
+        existing_data.update(new_data)
+
+        with open(file_path, "w", encoding="utf-8") as file:
+            json.dump(existing_data, file, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logging.error(f"Error saving data: {e}")
+    
 def run_server():
     server_address = ('', 3000)
     httpd = HTTPServer(server_address, MyHandler)
@@ -132,7 +110,7 @@ def run_udp_server():
     try:
         while True:
             data, address = udp_server.recvfrom(4096)
-            handle_udp_data(data)
+            save_data(data)
     
     except KeyboardInterrupt:
         udp_server.close()
@@ -141,12 +119,6 @@ def run_udp_server():
         
 if __name__ == '__main__':
     
-    # http_thread = threading.Thread(target=run_server)
-    # http_thread.start()
-    
-    # run_udp_server()
-    # http_thread.join()
-
     http_thread = threading.Thread(target=run_server)
     udp_thread = threading.Thread(target=run_udp_server)
     http_thread.start()
@@ -156,5 +128,3 @@ if __name__ == '__main__':
         udp_thread.join()
     except KeyboardInterrupt:
         print("Server terminated by user.")
-
-
